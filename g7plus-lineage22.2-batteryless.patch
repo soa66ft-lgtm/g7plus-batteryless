@@ -1,0 +1,67 @@
+--- a/drivers/power/supply/qcom/qpnp-fg-gen3.c
++++ b/drivers/power/supply/qcom/qpnp-fg-gen3.c
+@@ -1029,13 +1029,15 @@
+ 	fg_dbg(chip, FG_STATUS, "batt_id: %d\n", batt_id);
+ 	chip->batt_id_ohms = batt_id;
+ out:
+-	ret = fg_batt_missing_config(chip, true);
++	/* Batteryless mode: keep battery-missing detection disabled. */
++	ret = fg_batt_missing_config(chip, false);
+ 	if (ret < 0) {
+-		pr_err("Error in enabling BMD, ret=%d\n", ret);
++		pr_err("Error in keeping BMD disabled, ret=%d\n", ret);
+ 		return ret;
+ 	}
+ 
+-	vote(chip->batt_miss_irq_en_votable, BATT_MISS_IRQ_VOTER, true, 0);
++	vote(chip->batt_miss_irq_en_votable, BATT_MISS_IRQ_VOTER, false, 0);
++	chip->battery_missing = false;
+ 	return rc;
+ }
+ 
+@@ -4884,28 +4886,13 @@
+ static irqreturn_t fg_batt_missing_irq_handler(int irq, void *data)
+ {
+ 	struct fg_chip *chip = data;
+-	u8 status;
+-	int rc;
+-
+-	rc = fg_read(chip, BATT_INFO_INT_RT_STS(chip), &status, 1);
+-	if (rc < 0) {
+-		pr_err("failed to read addr=0x%04x, rc=%d\n",
+-			BATT_INFO_INT_RT_STS(chip), rc);
+-		return IRQ_HANDLED;
+-	}
+ 
+-	fg_dbg(chip, FG_IRQ, "irq %d triggered sts:%d\n", irq, status);
+-	chip->battery_missing = (status & BT_MISS_BIT);
+-
+-	if (chip->battery_missing) {
+-		chip->profile_available = false;
+-		chip->profile_loaded = false;
+-		chip->soc_reporting_ready = false;
+-		return IRQ_HANDLED;
+-	}
+-
+-	clear_battery_profile(chip);
+-	schedule_delayed_work(&chip->profile_load_work, 0);
++	/*
++	 * Batteryless mode for Motorola lake: USB power can keep the device
++	 * alive, so do not invalidate the FG profile when PM660 reports
++	 * BT_MISS. Keep the software-visible battery state present.
++	 */
++	chip->battery_missing = false;
+ 
+ 	if (chip->fg_psy)
+ 		power_supply_changed(chip->fg_psy);
+--- a/arch/arm64/boot/dts/qcom/sdm636-lake.dtsi
++++ b/arch/arm64/boot/dts/qcom/sdm636-lake.dtsi
+@@ -342,7 +342,7 @@
+ /{
+ 	mot_batterydata: qcom,battery-data {
+ 		qcom,batt-id-range-pct = <15>;
+-		df-serialnum = "SB18C35581";
++		df-serialnum = "SB18C44559"; /* batteryless: force JG40-2 fallback profile */
+ 
+ 		#include "fg-gen3-batterydata-jg40-3000mah.dtsi"
+ 		#include "fg-gen3-batterydata-jg40cos-3000mah.dtsi"
