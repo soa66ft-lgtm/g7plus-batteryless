@@ -11,11 +11,27 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git make bc bison flex libssl-dev libelf-dev device-tree-compiler python3 wget xz-utils cpio
+          sudo apt-get install -y \
+            git \
+            make \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            device-tree-compiler \
+            python3 \
+            wget \
+            xz-utils \
+            cpio
 
       - name: Download kernel source
         run: |
-          git clone --depth=1 --branch lineage-22.2 https://github.com/LineageOS/android_kernel_motorola_msm8998.git kernel
+          git clone \
+            --depth=1 \
+            --branch lineage-22.2 \
+            https://github.com/LineageOS/android_kernel_motorola_msm8998.git \
+            kernel
 
       - name: Apply batteryless patch
         run: |
@@ -44,8 +60,11 @@ jobs:
           		return ret;
           	}
 
-          	vote(chip->batt_miss_irq_en_votable, BATT_MISS_IRQ_VOTER, false, 0);
+          	vote(chip->batt_miss_irq_en_votable,
+          		BATT_MISS_IRQ_VOTER, false, 0);
+
           	chip->battery_missing = false;
+
           	return rc;
           }'''
 
@@ -85,7 +104,10 @@ jobs:
           {
           	struct fg_chip *chip = data;
 
-          	/* Batteryless mode for Motorola lake */
+          	/*
+          	 * Batteryless mode for Motorola lake:
+          	 * ignore BATT_MISSING and keep the battery profile active.
+          	 */
           	chip->battery_missing = false;
 
           	if (chip->fg_psy)
@@ -94,73 +116,125 @@ jobs:
           	return IRQ_HANDLED;
           }'''
 
-          for name, old, new in [
-              ("disable BMD", old1, new1),
-              ("ignore missing IRQ", old2, new2),
-          ]:
+          replacements = [
+              ("Disable battery missing detection", old1, new1),
+              ("Ignore battery missing IRQ", old2, new2),
+          ]
+
+          for name, old, new in replacements:
               if old not in s:
-                  raise SystemExit(f"Could not find source block: {name}")
+                  raise SystemExit(
+                      "ERROR: could not find source block: " + name
+                  )
+
               s = s.replace(old, new, 1)
-              print(f"Patched: {name}")
+              print("Patched:", name)
 
           p.write_text(s)
 
-          print("Batteryless patch applied successfully")
+          print("Batteryless patch applied successfully.")
           PY
 
       - name: Download toolchains
         run: |
-          mkdir -p toolchains/clang toolchains/gcc64 toolchains/gcc32
+          mkdir -p \
+            toolchains/clang \
+            toolchains/gcc64 \
+            toolchains/gcc32
 
           wget -q -O clang.tar.gz \
             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r530567.tar.gz"
-          tar -xzf clang.tar.gz -C toolchains/clang
+
+          tar -xzf clang.tar.gz \
+            -C toolchains/clang
 
           wget -q -O gcc64.tar.gz \
             "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz"
-          tar -xzf gcc64.tar.gz -C toolchains/gcc64
+
+          tar -xzf gcc64.tar.gz \
+            -C toolchains/gcc64
 
           wget -q -O gcc32.tar.gz \
             "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz"
-          tar -xzf gcc32.tar.gz -C toolchains/gcc32
+
+          tar -xzf gcc32.tar.gz \
+            -C toolchains/gcc32
 
       - name: Configure kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/toolchains/clang/bin:$PATH"
 
-          make -C kernel O="$GITHUB_WORKSPACE/out" ARCH=arm64 \
+          export ARCH=arm64
+
+          export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchains/gcc64/bin/aarch64-linux-android-"
+
+          export CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-"
+
+          export CROSS_COMPILE_COMPAT="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-"
+
+          make -C kernel \
+            O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE="$GITHUB_WORKSPACE/toolchains/gcc64/bin/aarch64-linux-android-" \
-            CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
             lineageos_lake_defconfig
 
       - name: Build kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/toolchains/clang/bin:$PATH"
 
-          make -C kernel -j"$(nproc)" \
+          export ARCH=arm64
+
+          export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchains/gcc64/bin/aarch64-linux-android-"
+
+          export CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-"
+
+          export CROSS_COMPILE_COMPAT="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-"
+
+          make -C kernel \
+            -j"$(nproc)" \
             O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 \
             DTC_EXT=dtc \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE="$GITHUB_WORKSPACE/toolchains/gcc64/bin/aarch64-linux-android-" \
-            CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-"
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT"
 
       - name: Collect outputs
         run: |
+          echo "Files generated in ARM64 boot directory:"
+          find out/arch/arm64/boot \
+            -maxdepth 2 \
+            -type f \
+            -print
+
           mkdir -p artifact
 
-          find out/arch/arm64/boot -maxdepth 1 -type f -print
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp \
+              out/arch/arm64/boot/Image.gz-dtb \
+              artifact/
+          else
+            echo "ERROR: Image.gz-dtb was not generated."
+            exit 1
+          fi
 
-          cp out/arch/arm64/boot/Image.gz-dtb artifact/
-          cp out/.config artifact/kernel.config
+          cp \
+            out/.config \
+            artifact/kernel.config
 
-          sha256sum artifact/* > artifact/SHA256SUMS.txt
+          sha256sum \
+            artifact/* \
+            > artifact/SHA256SUMS.txt
 
       - name: Upload compiled kernel
         uses: actions/upload-artifact@v4
         with:
           name: g7plus-lake-batteryless-kernel
           path: artifact/
+          if-no-files-found: error
