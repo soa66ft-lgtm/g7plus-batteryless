@@ -1,0 +1,146 @@
+name: Build G7 Plus batteryless kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git make bc bison flex libssl-dev libelf-dev device-tree-compiler python3 wget xz-utils cpio
+
+      - name: Download kernel source
+        run: |
+          git clone --depth=1 --branch lineage-22.2 https://github.com/LineageOS/android_kernel_motorola_msm8998.git kernel
+
+      - name: Apply batteryless patch
+        run: |
+          cat > batteryless.patch <<'PATCH'
+          --- a/drivers/power/supply/qcom/qpnp-fg-gen3.c
+          +++ b/drivers/power/supply/qcom/qpnp-fg-gen3.c
+          @@ -1029,13 +1029,15 @@
+           	fg_dbg(chip, FG_STATUS, "batt_id: %d\n", batt_id);
+           	chip->batt_id_ohms = batt_id;
+           out:
+          -	ret = fg_batt_missing_config(chip, true);
+          +	/* Batteryless mode: keep battery-missing detection disabled. */
+          +	ret = fg_batt_missing_config(chip, false);
+           	if (ret < 0) {
+          -		pr_err("Error in enabling BMD, ret=%d\n", ret);
+          +		pr_err("Error in keeping BMD disabled, ret=%d\n", ret);
+           		return ret;
+           	}
+           
+          -	vote(chip->batt_miss_irq_en_votable, BATT_MISS_IRQ_VOTER, true, 0);
+          +	vote(chip->batt_miss_irq_en_votable, BATT_MISS_IRQ_VOTER, false, 0);
+          +	chip->battery_missing = false;
+           	return rc;
+           }
+           
+          @@ -4884,28 +4886,13 @@
+           static irqreturn_t fg_batt_missing_irq_handler(int irq, void *data)
+           {
+           	struct fg_chip *chip = data;
+          -	u8 status;
+          -	int rc;
+          -
+          -	rc = fg_read(chip, BATT_INFO_INT_RT_STS(chip), &status, 1);
+          -	if (rc < 0) {
+          -		pr_err("failed to read addr=0x%04x, rc=%d\n",
+          -			BATT_INFO_INT_RT_STS(chip), rc);
+          -		return IRQ_HANDLED;
+          -	}
+          -
+          -	fg_dbg(chip, FG_IRQ, "irq %d triggered sts:%d\n", irq, status);
+          -	chip->battery_missing = (status & BT_MISS_BIT);
+          -
+          -	if (chip->battery_missing) {
+          -		chip->profile_available = false;
+          -		chip->profile_loaded = false;
+          -		chip->soc_reporting_ready = false;
+          -		return IRQ_HANDLED;
+          -	}
+          -
+          -	clear_battery_profile(chip);
+          -	schedule_delayed_work(&chip->profile_load_work, 0);
+          +	/* Batteryless mode for Motorola lake. */
+          +	chip->battery_missing = false;
+           
+           	if (chip->fg_psy)
+           		power_supply_changed(chip->fg_psy);
+          --- a/arch/arm64/boot/dts/qcom/sdm636-lake.dtsi
+          +++ b/arch/arm64/boot/dts/qcom/sdm636-lake.dtsi
+          @@ -342,7 +342,7 @@
+           /{
+           	mot_batterydata: qcom,battery-data {
+           		qcom,batt-id-range-pct = <15>;
+          -		df-serialnum = "SB18C35581";
+          +		df-serialnum = "SB18C44559";
+           
+           		#include "fg-gen3-batterydata-jg40-3000mah.dtsi"
+           		#include "fg-gen3-batterydata-jg40cos-3000mah.dtsi"
+          PATCH
+
+          cd kernel
+          patch -p1 < ../batteryless.patch
+
+      - name: Download toolchains
+        run: |
+          mkdir -p toolchains/clang toolchains/gcc64 toolchains/gcc32
+
+          wget -q --show-progress -O clang.tar.gz \
+            'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r530567.tar.gz'
+          tar -xzf clang.tar.gz -C toolchains/clang
+
+          wget -q --show-progress -O gcc64.tar.gz \
+            'https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz'
+          tar -xzf gcc64.tar.gz -C toolchains/gcc64
+
+          wget -q --show-progress -O gcc32.tar.gz \
+            'https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz'
+          tar -xzf gcc32.tar.gz -C toolchains/gcc32
+
+      - name: Configure kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/toolchains/clang/bin:$PATH"
+
+          make -C kernel O=out ARCH=arm64 \
+            CC=clang CXX=clang++ LD=ld.lld \
+            AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE="$GITHUB_WORKSPACE/toolchains/gcc64/bin/aarch64-linux-android-" \
+            CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-" \
+            lineageos_lake_defconfig
+
+      - name: Build kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/toolchains/clang/bin:$PATH"
+
+          make -C kernel -j"$(nproc)" O=out ARCH=arm64 DTC_EXT=dtc \
+            CC=clang CXX=clang++ LD=ld.lld \
+            AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE="$GITHUB_WORKSPACE/toolchains/gcc64/bin/aarch64-linux-android-" \
+            CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-" \
+            Image.gz-dtb dtbs
+
+      - name: Collect outputs
+        run: |
+          mkdir artifact
+          cp out/arch/arm64/boot/Image.gz-dtb artifact/
+          cp kernel/.config artifact/kernel.config
+          sha256sum artifact/* > artifact/SHA256SUMS.txt
+
+      - name: Upload compiled kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: g7plus-lake-batteryless-kernel
+          path: artifact/
