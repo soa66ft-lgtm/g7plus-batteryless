@@ -8,22 +8,15 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git \
-            make \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            libelf-dev \
+            git make bc bison flex \
+            libssl-dev libelf-dev \
             device-tree-compiler \
-            python3 \
-            wget \
-            xz-utils \
-            cpio
+            python3 wget xz-utils cpio
 
       - name: Download kernel source
         run: |
@@ -105,8 +98,8 @@ jobs:
           	struct fg_chip *chip = data;
 
           	/*
-          	 * Batteryless mode for Motorola lake:
-          	 * ignore BATT_MISSING and keep the battery profile active.
+          	 * Batteryless mode for Motorola lake.
+          	 * Ignore BATT_MISSING and keep profile active.
           	 */
           	chip->battery_missing = false;
 
@@ -116,23 +109,23 @@ jobs:
           	return IRQ_HANDLED;
           }'''
 
-          replacements = [
-              ("Disable battery missing detection", old1, new1),
-              ("Ignore battery missing IRQ", old2, new2),
+          changes = [
+              ("disable BMD", old1, new1),
+              ("ignore missing IRQ", old2, new2),
           ]
 
-          for name, old, new in replacements:
+          for name, old, new in changes:
               if old not in s:
                   raise SystemExit(
-                      "ERROR: could not find source block: " + name
+                      "ERROR: source block not found: " + name
                   )
 
               s = s.replace(old, new, 1)
-              print("Patched:", name)
+              print("PATCH OK:", name)
 
           p.write_text(s)
 
-          print("Batteryless patch applied successfully.")
+          print("BATTERYLESS PATCH APPLIED SUCCESSFULLY")
           PY
 
       - name: Download toolchains
@@ -142,11 +135,15 @@ jobs:
             toolchains/gcc64 \
             toolchains/gcc32
 
+          echo "Downloading Clang..."
+
           wget -q -O clang.tar.gz \
             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r530567.tar.gz"
 
           tar -xzf clang.tar.gz \
             -C toolchains/clang
+
+          echo "Downloading ARM64 GCC..."
 
           wget -q -O gcc64.tar.gz \
             "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz"
@@ -154,45 +151,63 @@ jobs:
           tar -xzf gcc64.tar.gz \
             -C toolchains/gcc64
 
+          echo "Downloading ARM32 GCC..."
+
           wget -q -O gcc32.tar.gz \
             "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz"
 
           tar -xzf gcc32.tar.gz \
             -C toolchains/gcc32
 
+          echo "Checking tools..."
+
+          toolchains/clang/bin/clang --version
+          toolchains/clang/bin/llvm-objcopy --version
+
+          toolchains/gcc64/bin/aarch64-linux-android-gcc --version
+          toolchains/gcc32/bin/arm-linux-androideabi-gcc --version
+
       - name: Configure kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/toolchains/clang/bin:$PATH"
 
-          export ARCH=arm64
-
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchains/gcc64/bin/aarch64-linux-android-"
-
           export CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-"
-
-          export CROSS_COMPILE_COMPAT="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-"
 
           make -C kernel \
             O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 \
             CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE="$CROSS_COMPILE" \
             CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
             lineageos_lake_defconfig
+
+      - name: Verify configuration
+        run: |
+          echo "Relevant kernel settings:"
+
+          grep CONFIG_COMPAT "$GITHUB_WORKSPACE/out/.config" || true
+          grep CONFIG_COMPAT_VDSO "$GITHUB_WORKSPACE/out/.config" || true
+
+          echo "LLVM objcopy:"
+          "$GITHUB_WORKSPACE/toolchains/clang/bin/llvm-objcopy" --version
+
+          echo "ARM32 compiler:"
+          "$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-gcc" --version
 
       - name: Build kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/toolchains/clang/bin:$PATH"
 
-          export ARCH=arm64
-
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchains/gcc64/bin/aarch64-linux-android-"
-
           export CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-"
-
-          export CROSS_COMPILE_COMPAT="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-"
 
           make -C kernel \
             -j"$(nproc)" \
@@ -200,37 +215,44 @@ jobs:
             ARCH=arm64 \
             DTC_EXT=dtc \
             CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE="$CROSS_COMPILE" \
-            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT"
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32"
 
       - name: Collect outputs
         run: |
-          echo "Files generated in ARM64 boot directory:"
-          find out/arch/arm64/boot \
-            -maxdepth 2 \
-            -type f \
-            -print
-
           mkdir -p artifact
 
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp \
-              out/arch/arm64/boot/Image.gz-dtb \
-              artifact/
-          else
-            echo "ERROR: Image.gz-dtb was not generated."
+          echo "Checking generated kernel files..."
+
+          ls -lh out/arch/arm64/boot/
+
+          if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "ERROR: Image.gz-dtb was not generated"
             exit 1
           fi
+
+          cp \
+            out/arch/arm64/boot/Image.gz-dtb \
+            artifact/Image.gz-dtb
 
           cp \
             out/.config \
             artifact/kernel.config
 
           sha256sum \
-            artifact/* \
+            artifact/Image.gz-dtb \
+            artifact/kernel.config \
             > artifact/SHA256SUMS.txt
+
+          echo "RESULT:"
+          ls -lh artifact/
 
       - name: Upload compiled kernel
         uses: actions/upload-artifact@v4
