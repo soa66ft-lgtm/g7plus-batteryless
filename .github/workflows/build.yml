@@ -16,6 +16,7 @@ jobs:
       - name: Download kernel source
         run: |
           git clone --depth=1 --branch lineage-22.2 https://github.com/LineageOS/android_kernel_motorola_msm8998.git kernel
+
       - name: Apply batteryless patch
         run: |
           python3 <<'PY'
@@ -84,7 +85,7 @@ jobs:
           {
           	struct fg_chip *chip = data;
 
-          	/* Batteryless mode for Motorola lake: ignore BATT_MISSING IRQ. */
+          	/* Batteryless mode for Motorola lake */
           	chip->battery_missing = false;
 
           	if (chip->fg_psy)
@@ -93,24 +94,9 @@ jobs:
           	return IRQ_HANDLED;
           }'''
 
-          old3 = '''	if ((retval == -EINVAL) || !battsn_buf) {
-          		pr_err("Battsn unused\\n");
-          		of_node_put(np);
-          		return NULL;
-
-          	} else'''
-
-          new3 = '''	if ((retval == -EINVAL) || !battsn_buf) {
-          		pr_err("Battsn missing, using lake batteryless fallback\\n");
-          		of_node_put(np);
-          		return "SB18C44559";
-
-          	} else'''
-
           for name, old, new in [
               ("disable BMD", old1, new1),
               ("ignore missing IRQ", old2, new2),
-              ("battery serial fallback", old3, new3),
           ]:
               if old not in s:
                   raise SystemExit(f"Could not find source block: {name}")
@@ -119,33 +105,31 @@ jobs:
 
           p.write_text(s)
 
-          print("Batteryless kernel patch applied successfully.")
+          print("Batteryless patch applied successfully")
           PY
-    
+
+      - name: Download toolchains
         run: |
           mkdir -p toolchains/clang toolchains/gcc64 toolchains/gcc32
 
-          wget -q --show-progress -O clang.tar.gz \
-            'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r530567.tar.gz'
+          wget -q -O clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r530567.tar.gz"
           tar -xzf clang.tar.gz -C toolchains/clang
 
-          wget -q --show-progress -O gcc64.tar.gz \
-            'https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz'
+          wget -q -O gcc64.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz"
           tar -xzf gcc64.tar.gz -C toolchains/gcc64
 
-          wget -q --show-progress -O gcc32.tar.gz \
-            'https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz'
+          wget -q -O gcc32.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz"
           tar -xzf gcc32.tar.gz -C toolchains/gcc32
 
       - name: Configure kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/toolchains/clang/bin:$PATH"
 
-          make -C kernel O=out ARCH=arm64 \
-            CC=clang CXX=clang++ LD=ld.lld \
-            AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
+          make -C kernel O="$GITHUB_WORKSPACE/out" ARCH=arm64 \
+            CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE="$GITHUB_WORKSPACE/toolchains/gcc64/bin/aarch64-linux-android-" \
             CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-" \
@@ -155,21 +139,24 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/toolchains/clang/bin:$PATH"
 
-          make -C kernel -j"$(nproc)" O=out ARCH=arm64 DTC_EXT=dtc \
-            CC=clang CXX=clang++ LD=ld.lld \
-            AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
+          make -C kernel -j"$(nproc)" \
+            O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 \
+            DTC_EXT=dtc \
+            CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE="$GITHUB_WORKSPACE/toolchains/gcc64/bin/aarch64-linux-android-" \
-            CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-" \
-            Image.gz-dtb dtbs
+            CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/toolchains/gcc32/bin/arm-linux-androideabi-"
 
       - name: Collect outputs
         run: |
-          mkdir artifact
+          mkdir -p artifact
+
+          find out/arch/arm64/boot -maxdepth 1 -type f -print
+
           cp out/arch/arm64/boot/Image.gz-dtb artifact/
-          cp kernel/.config artifact/kernel.config
+          cp out/.config artifact/kernel.config
+
           sha256sum artifact/* > artifact/SHA256SUMS.txt
 
       - name: Upload compiled kernel
