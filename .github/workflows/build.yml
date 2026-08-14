@@ -107,7 +107,7 @@ jobs:
 
           	/*
           	 * Batteryless mode for Motorola lake.
-          	 * Ignore BATT_MISSING and keep the profile active.
+          	 * Ignore BATT_MISSING and keep battery profile active.
           	 */
           	chip->battery_missing = false;
 
@@ -117,12 +117,10 @@ jobs:
           	return IRQ_HANDLED;
           }'''
 
-          changes = [
+          for name, old, new in [
               ("disable BMD", old1, new1),
               ("ignore battery missing IRQ", old2, new2),
-          ]
-
-          for name, old, new in changes:
+          ]:
               if old not in s:
                   raise SystemExit(
                       "ERROR: source block not found: " + name
@@ -136,7 +134,7 @@ jobs:
           print("BATTERYLESS PATCH APPLIED")
           PY
 
-      - name: Fix ARM32 vdso objcopy
+      - name: Fix vdso32 ARM tools
         run: |
           python3 <<'PY'
           from pathlib import Path
@@ -151,7 +149,7 @@ jobs:
           '''
 
           new = '''# Strip rule for vdso.so
-          # vdso32 is an AArch32 ELF, so force the ARM32 GNU objcopy.
+          # vdso32 is AArch32. Use ARM32 objcopy explicitly.
           $(obj)/vdso.so: OBJCOPY := $(CROSS_COMPILE_ARM32)objcopy
           $(obj)/vdso.so: OBJCOPYFLAGS := -S
           $(obj)/vdso.so: $(obj)/vdso.so.dbg FORCE
@@ -160,13 +158,13 @@ jobs:
 
           if old not in s:
               raise SystemExit(
-                  "ERROR: vdso32 objcopy rule was not found"
+                  "ERROR: vdso32 objcopy block not found"
               )
 
           s = s.replace(old, new, 1)
           p.write_text(s)
 
-          print("VDSO32 FIX APPLIED")
+          print("VDSO32 OBJCOPY FIX APPLIED")
           PY
 
       - name: Download toolchains
@@ -200,24 +198,34 @@ jobs:
           tar -xzf gcc32.tar.gz \
             -C toolchains/gcc32
 
-          echo "Checking required tools..."
+          echo "===== CHECKING TOOLS ====="
 
           test -x toolchains/clang/bin/clang
-          test -x toolchains/gcc64/bin/aarch64-linux-android-ld
-          test -x toolchains/gcc64/bin/aarch64-linux-android-objcopy
-          test -x toolchains/gcc32/bin/arm-linux-androideabi-ld
-          test -x toolchains/gcc32/bin/arm-linux-androideabi-objcopy
 
-          echo "===== CLANG ====="
+          test -x \
+            toolchains/gcc64/bin/aarch64-linux-android-ld.bfd
+
+          test -x \
+            toolchains/gcc64/bin/aarch64-linux-android-objcopy
+
+          test -x \
+            toolchains/gcc32/bin/arm-linux-androideabi-ld.bfd
+
+          test -x \
+            toolchains/gcc32/bin/arm-linux-androideabi-objcopy
+
+          echo "Clang:"
           toolchains/clang/bin/clang --version
 
-          echo "===== ARM64 OBJCOPY ====="
-          toolchains/gcc64/bin/aarch64-linux-android-objcopy --version
+          echo "ARM32 BFD linker:"
+          toolchains/gcc32/bin/arm-linux-androideabi-ld.bfd \
+            --version | head -n 1
 
-          echo "===== ARM32 OBJCOPY ====="
-          toolchains/gcc32/bin/arm-linux-androideabi-objcopy --version
+          echo "ARM32 objcopy:"
+          toolchains/gcc32/bin/arm-linux-androideabi-objcopy \
+            --version | head -n 1
 
-          echo "ALL REQUIRED TOOLS FOUND"
+          echo "ALL TOOLS FOUND"
 
       - name: Configure kernel
         run: |
@@ -235,23 +243,26 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE="$CROSS_COMPILE" \
             CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            LD_ARM32=arm-linux-androideabi-ld.bfd \
             lineageos_lake_defconfig
 
-      - name: Verify configuration
+      - name: Verify ARM32 VDSO toolchain
         run: |
           export PATH="$GITHUB_WORKSPACE/toolchains/clang/bin:$PATH"
           export PATH="$GITHUB_WORKSPACE/toolchains/gcc64/bin:$PATH"
           export PATH="$GITHUB_WORKSPACE/toolchains/gcc32/bin:$PATH"
 
+          echo "===== ARM32 BFD LINKER ====="
+          which arm-linux-androideabi-ld.bfd
+          arm-linux-androideabi-ld.bfd --version | head -n 3
+
+          echo "===== ARM32 OBJCOPY ====="
+          which arm-linux-androideabi-objcopy
+          arm-linux-androideabi-objcopy --version | head -n 3
+
           echo "===== CONFIG ====="
           grep CONFIG_COMPAT "$GITHUB_WORKSPACE/out/.config" || true
           grep CONFIG_COMPAT_VDSO "$GITHUB_WORKSPACE/out/.config" || true
-
-          echo "===== ARM32 TOOLS ====="
-          which arm-linux-androideabi-ld
-          which arm-linux-androideabi-objcopy
-
-          arm-linux-androideabi-objcopy --version
 
       - name: Build kernel
         run: |
@@ -270,7 +281,8 @@ jobs:
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE="$CROSS_COMPILE" \
-            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32"
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            LD_ARM32=arm-linux-androideabi-ld.bfd
 
       - name: Collect outputs
         run: |
